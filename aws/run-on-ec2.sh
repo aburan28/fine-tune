@@ -29,7 +29,7 @@ set -euo pipefail
 REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo us-west-2)}"
 INSTANCE_TYPE="${FT_INSTANCE_TYPE:-g7.2xlarge}"
 CONFIG="configs/qwen3-4b-g7.yaml"
-MODEL="Qwen/Qwen3-4B"
+MODEL=""   # defaults to the config's model.name; see model_from_config
 MAX_HOURS=12
 VOLUME_SIZE=200
 MAX_PRICE=""
@@ -84,6 +84,26 @@ while [ $# -gt 0 ]; do
 done
 
 # --- shared helpers ----------------------------------------------------------
+
+# The evaluations and the training run have to use the same base model. They are
+# configured in different places -- evaluate.py takes --model, train_grpo.py
+# reads it from the config -- so defaulting MODEL to a constant silently paired
+# a 1.7B training run with 4B evaluations, and loading the resulting adapter
+# onto the wrong base fails outright. The config is the single source of truth;
+# --model only overrides it when you mean to.
+model_from_config () {
+  awk '
+    /^[a-zA-Z_]+:/ { in_model = ($1 == "model:") }
+    in_model && $1 == "name:" { print $2; exit }
+  ' "$1"
+}
+
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -z "$MODEL" ]; then
+  [ -f "$REPO_ROOT/$CONFIG" ] || die "config not found: $CONFIG"
+  MODEL="$(model_from_config "$REPO_ROOT/$CONFIG")"
+  [ -n "$MODEL" ] || die "could not read model.name from $CONFIG"
+fi
 
 require_aws () {
   command -v aws >/dev/null || die "aws CLI not found"
@@ -183,6 +203,32 @@ resolve_ami () {
     | head -1 | awk '{print $4}'
 }
 
+# A failed launch should not leave a billable volume behind for a run that never
+# started. Only one this invocation created is removed; an existing volume may
+# hold checkpoints and is never touched.
+launch_failed () {
+  local volume="$1" created="$2"
+  if [ "$created" = "1" ] && [ -n "$volume" ]; then
+    echo "cleaning up the volume this attempt created ($volume)" >&2
+    aws_ ec2 delete-volume --volume-id "$volume" >/dev/null 2>&1 || true
+  fi
+  cat >&2 <<'HINT'
+
+Launch failed. If the error above is MaxSpotInstanceCountExceeded or
+VcpuLimitExceeded, the account's GPU spot quota is 0 and this is a quota
+request, not a billing problem:
+
+  https://us-west-2.console.aws.amazon.com/servicequotas/home/services/ec2/quotas
+  -> "All G and VT Spot Instance Requests" -> request at least 8 vCPUs
+
+On-demand is a separate quota and is often nonzero when the spot one is not:
+
+  ./aws/run-on-ec2.sh up --on-demand --config configs/smoke.yaml --max-hours 1
+
+HINT
+  exit 1
+}
+
 # --- price -------------------------------------------------------------------
 
 cmd_price () {
@@ -223,7 +269,7 @@ cmd_up () {
   # The volume can only attach to an instance in its own AZ, so an existing
   # volume pins the AZ. That costs some spot flexibility and is worth it: the
   # alternative is losing the checkpoints it holds.
-  local volume az
+  local volume az created_volume=0
   volume="$(find_volume)"
   if [ -n "$volume" ]; then
     az="$(aws_ ec2 describe-volumes --volume-ids "$volume" \
@@ -292,6 +338,7 @@ Delete the key pair (aws ec2 delete-key-pair --key-name $KEY_NAME --region $REGI
       --tag-specifications "ResourceType=volume,Tags=[{Key=Name,Value=$VOLUME_TAG},{Key=Project,Value=$TAG_PROJECT}]" \
       --query 'VolumeId' --output text)"
     aws_ ec2 wait volume-available --volume-ids "$volume"
+    created_volume=1
     echo "  created $volume"
   fi
 
@@ -341,7 +388,7 @@ Delete the key pair (aws ec2 delete-key-pair --key-name $KEY_NAME --region $REGI
     --user-data "file://$udata" \
     --tag-specifications \
       "ResourceType=instance,Tags=[{Key=Name,Value=finetune-spot},{Key=Project,Value=$TAG_PROJECT}]" \
-    --query 'Instances[0].InstanceId' --output text)" || die "launch failed -- see the note on quotas in aws/README.md"
+    --query 'Instances[0].InstanceId' --output text)" || launch_failed "$volume" "$created_volume"
   echo "  $iid"
 
   say "waiting for it to run"
