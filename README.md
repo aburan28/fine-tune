@@ -45,9 +45,22 @@ live proofwork objective and skip unless that checkout is nearby; point
 pip install -r requirements.txt
 ```
 
+Prove the loop closes before spending a night on it — twenty steps on the
+smallest Qwen3, about ten minutes:
+
+```bash
+python train_grpo.py --config configs/smoke.yaml
+```
+
+Then the real run:
+
 ```bash
 python train_grpo.py --config configs/qwen3-4b-24gb.yaml
 ```
+
+Generation, not the backward pass, is the wall clock here: 2000 steps is
+~64k completions. Install `vllm` and set `use_vllm: true` if the run needs to
+finish overnight rather than over a weekend.
 
 Then measure it against the untrained model, which is the only comparison that
 means anything:

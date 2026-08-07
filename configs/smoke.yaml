@@ -1,0 +1,61 @@
+# Run this first. It is not a training run -- it proves the loop closes.
+#
+# Twenty steps on the smallest Qwen3 and the easiest family, which is enough to
+# surface every failure that is cheap to fix and expensive to discover late: a
+# missing wheel, a chat template that does not open <think>, a batch size that
+# is not a multiple of num_generations, a reward function raising on the first
+# malformed rollout. Roughly ten minutes and a few GB of VRAM.
+#
+# Watch `reward` in the log. It should be noisy but non-zero within a few steps
+# -- Caesar at difficulty 0 is solvable by the base model some of the time. A
+# reward pinned at exactly 0.0 means the completions are not being parsed, not
+# that the model is bad; dump one and check where </think> landed.
+
+model:
+  name: Qwen/Qwen3-1.7B
+  load_in_4bit: false        # small enough not to need it; one less wheel to install
+  attn_implementation: sdpa
+
+data:
+  train_size: 128
+  eval_size: 16
+  families:
+    - caesar
+  max_difficulty: 0
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.0
+  bias: none
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+rewards:
+  correctness: 2.0
+  partial: 0.4
+  format: 0.3
+  invalid_penalty: 0.6
+  budget_penalty: 0.2
+  think_budget_chars: 2000
+
+training:
+  output_dir: runs/smoke
+  num_generations: 4
+  per_device_train_batch_size: 4   # must stay a multiple of num_generations
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-6
+  lr_scheduler_type: constant
+  warmup_steps: 0
+  beta: 0.02
+  max_steps: 20
+  max_prompt_length: 768
+  max_completion_length: 512
+  temperature: 1.0
+  top_p: 0.95
+  bf16: true
+  gradient_checkpointing: false
+  logging_steps: 1
+  save_steps: 20
+  eval_strategy: "no"
+  report_to: []
+  use_vllm: false
