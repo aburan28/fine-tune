@@ -43,7 +43,7 @@ live proofwork objective and skip unless that checkout is nearby; point
 ## Quick start
 
 No GPU handy? [`aws/`](aws/README.md) launches the whole thing on an EC2 spot
-instance — roughly $0.63/hr for a 24GB A10G, and built to resume after an
+instance — about $0.68/hr for a 32GB g7, and built to resume after an
 interruption rather than to avoid one:
 
 ```bash

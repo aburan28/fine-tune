@@ -1,0 +1,87 @@
+# g7e.2xlarge — 1x RTX PRO Server 6000, 96GB VRAM, 8 vCPU, 64GB RAM.
+# Spot around $1.58/hr, roughly 2.3x the g7.2xlarge for 3x the VRAM.
+#
+#   ./aws/run-on-ec2.sh up --instance-type g7e.2xlarge \
+#       --config configs/qwen3-8b-g7e.yaml --model Qwen/Qwen3-8B
+#
+# 96GB buys two things worth more than the extra dollar an hour:
+#
+#   * An 8B base instead of 4B. The hard families -- rsa-wiener, and
+#     dlp-secp256k1 above difficulty 1 -- need a continued-fraction or a
+#     baby-step giant-step argument carried accurately over many steps, and a
+#     4B model mostly cannot hold one together. If those families never earn
+#     reward they are contributing variance and nothing else, so a bigger base
+#     is what makes raising max_difficulty meaningful rather than wasteful.
+#   * vLLM colocated with training. Generation is the wall clock in GRPO --
+#     64k completions over a full run -- and at 24-32GB there is no room for a
+#     second copy of the weights for a fast inference engine. Here there is.
+#
+# max_difficulty is still 1. Raise it once the difficulty-1 solve rate has
+# actually moved; a larger model makes the harder tiers reachable, not free.
+
+model:
+  name: Qwen/Qwen3-8B
+  load_in_4bit: false
+  attn_implementation: sdpa
+
+data:
+  train_size: 8192
+  eval_size: 256
+  families:
+    - classical
+    - dlp-modp
+    - dlp-secp256k1
+    - rsa-factor
+    - rsa-cube
+    - rsa-common-modulus
+    - rsa-wiener
+  max_difficulty: 1
+
+lora:
+  r: 64
+  lora_alpha: 128
+  lora_dropout: 0.0
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+rewards:
+  correctness: 2.0
+  partial: 0.4
+  format: 0.3
+  invalid_penalty: 0.6
+  budget_penalty: 0.2
+  think_budget_chars: 8000
+
+training:
+  output_dir: runs/qwen3-8b-crypto
+  num_generations: 16               # a wider group; the advantage is the spread within it
+  per_device_train_batch_size: 16   # must be a multiple of num_generations
+  gradient_accumulation_steps: 2
+  learning_rate: 3.0e-6             # lower for the larger base
+  lr_scheduler_type: cosine
+  warmup_steps: 20
+  beta: 0.02
+  max_steps: 2000
+  max_prompt_length: 1024
+  max_completion_length: 3072       # room for a full continued-fraction derivation
+  temperature: 1.0
+  top_p: 0.95
+  bf16: true
+  gradient_checkpointing: true
+  logging_steps: 5
+  save_steps: 50
+  save_total_limit: 3
+  eval_strategy: "no"
+  report_to: []
+  # Worth turning on here, unlike the smaller cards: it needs its own copy of
+  # the weights, and this is the first config with the headroom for one.
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.3

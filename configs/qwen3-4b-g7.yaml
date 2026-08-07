@@ -1,0 +1,76 @@
+# g7.2xlarge — 1x RTX PRO 4500, 32GB VRAM, 8 vCPU, 32GB RAM.
+# Spot has been running about $0.68/hr, which is within pennies of the 24GB
+# g5.2xlarge, so this is the default the launcher uses.
+#
+# The 32GB is what makes this config differ from qwen3-4b-24gb.yaml: a 4B model
+# in bf16 is ~8GB of weights, so quantization stops being necessary. That is
+# worth taking. 4-bit NF4 costs accuracy on exactly the long arithmetic chains
+# these tasks are made of, and dropping it also drops bitsandbytes, which is
+# the dependency most likely to fight a brand-new GPU's CUDA version.
+#
+# GRPO needs no separate reference model here: with a PEFT adapter, TRL takes
+# the KL reference by disabling the adapter, so the frozen copy is free.
+
+model:
+  name: Qwen/Qwen3-4B
+  load_in_4bit: false
+  attn_implementation: sdpa   # flash_attention_2 once a wheel exists for this GPU
+
+data:
+  train_size: 4096
+  eval_size: 256
+  families:
+    - classical
+    - dlp-modp
+    - dlp-secp256k1
+    - rsa-factor
+    - rsa-cube
+    - rsa-common-modulus
+    - rsa-wiener
+  max_difficulty: 1
+
+lora:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.0
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+rewards:
+  correctness: 2.0
+  partial: 0.4
+  format: 0.3
+  invalid_penalty: 0.6
+  budget_penalty: 0.2
+  think_budget_chars: 6000
+
+training:
+  output_dir: runs/qwen3-4b-crypto
+  num_generations: 8
+  per_device_train_batch_size: 8    # must be a multiple of num_generations
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 20
+  beta: 0.02
+  max_steps: 2000
+  max_prompt_length: 1024
+  max_completion_length: 2048
+  temperature: 1.0
+  top_p: 0.95
+  bf16: true
+  gradient_checkpointing: true
+  logging_steps: 5
+  # Spot cadence: an interruption costs everything since the last save.
+  save_steps: 50
+  save_total_limit: 3
+  eval_strategy: "no"
+  report_to: []
+  use_vllm: false

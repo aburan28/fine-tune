@@ -27,12 +27,13 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo us-west-2)}"
-INSTANCE_TYPE="${FT_INSTANCE_TYPE:-g5.2xlarge}"
-CONFIG="configs/qwen3-4b-24gb.yaml"
+INSTANCE_TYPE="${FT_INSTANCE_TYPE:-g7.2xlarge}"
+CONFIG="configs/qwen3-4b-g7.yaml"
 MODEL="Qwen/Qwen3-4B"
 MAX_HOURS=12
 VOLUME_SIZE=200
 MAX_PRICE=""
+AMI=""
 REPO="https://github.com/aburan28/fine-tune.git"
 BRANCH="main"
 EVAL_SIZE=128
@@ -40,6 +41,7 @@ EVAL_SAMPLES=4
 MAX_DIFFICULTY=1
 SHUTDOWN_WHEN_DONE=1
 ASSUME_YES=0
+ON_DEMAND=0
 
 TAG_PROJECT="cryptanalysis-finetune"
 KEY_NAME="finetune-spot"
@@ -67,11 +69,13 @@ while [ $# -gt 0 ]; do
     --max-hours)      MAX_HOURS="$2"; shift 2 ;;
     --volume-size)    VOLUME_SIZE="$2"; shift 2 ;;
     --max-price)      MAX_PRICE="$2"; shift 2 ;;
+    --ami)            AMI="$2"; shift 2 ;;
     --repo)           REPO="$2"; shift 2 ;;
     --branch)         BRANCH="$2"; shift 2 ;;
     --eval-size)      EVAL_SIZE="$2"; shift 2 ;;
     --max-difficulty) MAX_DIFFICULTY="$2"; shift 2 ;;
     --keep-alive)     SHUTDOWN_WHEN_DONE=0; shift ;;
+    --on-demand)      ON_DEMAND=1; shift ;;
     --delete-volume)  DELETE_VOLUME=1; shift ;;
     -y|--yes)         ASSUME_YES=1; shift ;;
     -h|--help)        usage 0 ;;
@@ -143,17 +147,55 @@ cheapest_az () {
   spot_price "$INSTANCE_TYPE" | sort -k2 -g | head -1 | awk '{print $1}'
 }
 
+vram_of () {
+  aws_ ec2 describe-instance-types --instance-types "$1" \
+    --query 'InstanceTypes[0].GpuInfo.Gpus[0].MemoryInfo.SizeInMiB' --output text 2>/dev/null \
+    | awk '{ if ($1 ~ /^[0-9]+$/) printf "%dGB\n", $1/1024; else print "?" }'
+}
+
+ami_name () {
+  aws_ ec2 describe-images --image-ids "$1" --query 'Images[0].Name' --output text 2>/dev/null
+}
+
+# Pick the highest PyTorch version, then the newest build of it.
+#
+# Sorting on CreationDate alone is wrong here: the DLAMI family is rebuilt for
+# every PyTorch minor at once, so the newest image is whichever happened to
+# finish last -- it returned a PyTorch 2.10 image while 2.12 existed. On a GPU
+# generation this new that is a real risk, because the older build may predate
+# CUDA support for the card and torch will come up with no usable device.
+# `sort -V` orders 2.9 before 2.12, which a lexical sort does not.
+#
+# Parsed with awk rather than sed: BSD sed does not read "\t" as a tab, so a
+# sed version of this silently matched nothing, sorted on the whole image name,
+# and confidently selected a PyTorch 1.13 image from 2024.
+resolve_ami () {
+  aws_ ec2 describe-images --owners amazon \
+    --filters "Name=name,Values=Deep Learning OSS Nvidia Driver AMI GPU PyTorch*Ubuntu*" \
+              "Name=state,Values=available" \
+    --query 'Images[].[Name,CreationDate,ImageId]' --output text 2>/dev/null \
+    | awk -F'\t' '
+        match($1, /PyTorch [0-9]+\.[0-9]+/) {
+          split(substr($1, RSTART + 8, RLENGTH - 8), v, ".")
+          printf "%04d %04d %s %s\n", v[1], v[2], $2, $3
+        }' \
+    | sort -k1,1nr -k2,2nr -k3,3r \
+    | head -1 | awk '{print $4}'
+}
+
 # --- price -------------------------------------------------------------------
 
 cmd_price () {
   require_aws
   say "spot prices in $REGION"
-  for t in g5.xlarge g5.2xlarge g6.2xlarge g6e.xlarge; do
-    printf '%-14s' "$t"
+  printf '%-14s %-12s %s\n' TYPE VRAM "CHEAPEST SPOT"
+  for t in g5.2xlarge g6e.xlarge g7.2xlarge g7.4xlarge g7e.2xlarge; do
+    printf '%-14s %-12s' "$t" "$(vram_of "$t")"
     spot_price "$t" | sort -k2 -g | head -1 | awk '{printf "%s  $%s/hr\n", $1, $2}'
   done
   echo
-  echo "On-demand g5.2xlarge is about \$1.21/hr for comparison."
+  echo "g7.2xlarge is the default: 32GB for about what the 24GB g5.2xlarge costs."
+  echo "g7e.2xlarge's 96GB is what an 8B base and colocated vLLM need."
 }
 
 # --- up ----------------------------------------------------------------------
@@ -170,14 +212,13 @@ cmd_up () {
 
   [ -f "$SCRIPT_DIR/bootstrap.sh" ] || die "missing $SCRIPT_DIR/bootstrap.sh"
 
-  say "resolving the Deep Learning AMI"
-  local ami
-  ami="$(aws_ ec2 describe-images --owners amazon \
-    --filters "Name=name,Values=Deep Learning OSS Nvidia Driver AMI GPU PyTorch*Ubuntu*" \
-              "Name=state,Values=available" \
-    --query 'reverse(sort_by(Images,&CreationDate))[0].ImageId' --output text)"
-  [ -n "$ami" ] && [ "$ami" != "None" ] || die "no Deep Learning AMI found in $REGION"
-  echo "  $ami"
+  local ami="$AMI"
+  if [ -z "$ami" ]; then
+    say "resolving the Deep Learning AMI"
+    ami="$(resolve_ami)"
+    [ -n "$ami" ] || die "no Deep Learning AMI found in $REGION"
+  fi
+  echo "  $ami  $(ami_name "$ami")"
 
   # The volume can only attach to an instance in its own AZ, so an existing
   # volume pins the AZ. That costs some spot flexibility and is worth it: the
@@ -200,9 +241,9 @@ cmd_up () {
   cat <<PLAN
 
   region          $REGION
-  instance        $INSTANCE_TYPE (spot, one-time)
+  instance        $INSTANCE_TYPE ($([ "$ON_DEMAND" = 1 ] && echo on-demand || echo "spot, one-time"))
   availability    $az
-  spot price      \$${price}/hr   (max ${MAX_HOURS}h => about \$$(awk "BEGIN{printf \"%.2f\", $price*$MAX_HOURS}"))
+  price           \$${price}/hr$([ "$ON_DEMAND" = 1 ] && echo "  (spot rate shown; on-demand is ~2x)" || true)   (max ${MAX_HOURS}h => about \$$(awk "BEGIN{printf \"%.2f\", $price*$MAX_HOURS}"))
   ami             $ami
   data volume     ${volume:-<new>} (${VOLUME_SIZE}GB, survives interruption)
   config          $CONFIG
@@ -277,16 +318,25 @@ Delete the key pair (aws ec2 delete-key-pair --key-name $KEY_NAME --region $REGI
     --query 'Subnets[0].SubnetId' --output text)"
   [ -n "$subnet" ] && [ "$subnet" != "None" ] || die "no subnet in $az"
 
-  local market='MarketType=spot,SpotOptions={SpotInstanceType=one-time}'
-  [ -n "$MAX_PRICE" ] && market="MarketType=spot,SpotOptions={SpotInstanceType=one-time,MaxPrice=$MAX_PRICE}"
+  # On-demand is the escape hatch when spot has no capacity in the pinned zone,
+  # or when the G-family spot quota is still zero. It costs roughly double and
+  # cannot be reclaimed, so nothing else about the run needs to change.
+  local -a market=()
+  if [ "$ON_DEMAND" = "1" ]; then
+    say "requesting an ON-DEMAND instance (about 2x spot, will not be interrupted)"
+  else
+    local opts="SpotInstanceType=one-time"
+    [ -n "$MAX_PRICE" ] && opts="$opts,MaxPrice=$MAX_PRICE"
+    market=(--instance-market-options "MarketType=spot,SpotOptions={$opts}")
+    say "requesting the spot instance"
+  fi
 
-  say "requesting the spot instance"
   local iid
   iid="$(aws_ ec2 run-instances \
     --image-id "$ami" --instance-type "$INSTANCE_TYPE" --count 1 \
     --key-name "$KEY_NAME" --security-group-ids "$sg" --subnet-id "$subnet" \
     --associate-public-ip-address \
-    --instance-market-options "$market" \
+    "${market[@]+"${market[@]}"}" \
     --instance-initiated-shutdown-behavior terminate \
     --user-data "file://$udata" \
     --tag-specifications \
