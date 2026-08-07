@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Generated instances. They are a pure function of (family, difficulty, seed),
+# so a checkout regenerates them exactly -- committing them would only pin a
+# stale copy of something already reproducible.
+data/
+*.jsonl
+
+# Checkpoints, adapters, and evaluation reports.
+runs/
+*.json
+!configs/*.json

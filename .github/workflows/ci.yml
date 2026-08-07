@@ -1,0 +1,23 @@
+# The reward pipeline is standard library only, so CI needs no ML stack and no
+# GPU. That is the point of the split: the code that decides what the model
+# learns is checkable on a runner in under a second.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: python -m pytest tests/ -q

@@ -1,0 +1,77 @@
+# Single 24GB consumer GPU (RTX 4090 / A5000). ~21GB peak with these settings.
+#
+# The three knobs that decide whether this trains or thrashes:
+#   num_generations   group size -- GRPO's advantage is the spread within a
+#                     group, so 4 is the floor and 8 is where it stops being
+#                     noisy. It multiplies generation cost linearly.
+#   beta              KL to the frozen reference. Cryptanalysis rewards are
+#                     sparse and spiky; without this the policy will find a
+#                     degenerate high-reward dialect and stop writing English.
+#   max_completion_length   the thinking budget. Frequency analysis on 260
+#                     characters genuinely needs room; truncating mid-derivation
+#                     produces an unparseable answer and a wrongly-zero reward.
+
+model:
+  name: Qwen/Qwen3-4B
+  load_in_4bit: true
+  attn_implementation: sdpa   # flash_attention_2 if the wheel is installed
+
+data:
+  train_size: 4096
+  eval_size: 256
+  families:
+    - classical            # caesar, vigenere, substitution, transposition
+    - dlp-modp
+    - dlp-secp256k1
+    - rsa-factor
+    - rsa-cube
+    - rsa-common-modulus
+    - rsa-wiener
+  # Start at 1. Difficulty 2-3 on dlp-secp256k1 and rsa-wiener is not reachable
+  # in-context for a 4B model, and a family that never earns reward contributes
+  # only variance -- raise this after the difficulty-0/1 solve rate moves.
+  max_difficulty: 1
+
+lora:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.0
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+rewards:
+  correctness: 2.0
+  partial: 0.4
+  format: 0.3
+  invalid_penalty: 0.6
+  budget_penalty: 0.2
+  think_budget_chars: 6000
+
+training:
+  output_dir: runs/qwen3-4b-crypto
+  num_generations: 8
+  per_device_train_batch_size: 8    # must be a multiple of num_generations
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-6             # LoRA on an RL objective; 1e-5 already drifts
+  lr_scheduler_type: cosine
+  warmup_steps: 20
+  beta: 0.02
+  max_steps: 2000
+  max_prompt_length: 1024
+  max_completion_length: 2048
+  temperature: 1.0                  # exploration is the point; do not lower
+  top_p: 0.95
+  bf16: true
+  gradient_checkpointing: true
+  logging_steps: 5
+  save_steps: 200
+  eval_strategy: "no"               # scoring the eval split is evaluate.py's job
+  report_to: []
+  use_vllm: false                   # true roughly halves wall-clock if installed

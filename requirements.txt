@@ -1,0 +1,17 @@
+# Only train_grpo.py and evaluate.py need these. The reward pipeline
+# (cryptorl/tasks.py, verifiers.py, rewards.py, dataset.py) and its tests are
+# standard library only and run without any of it.
+#
+# Linux + CUDA. Install torch from the index matching your CUDA version first.
+torch>=2.4
+transformers>=4.51        # Qwen3 architecture support
+trl>=0.14                 # GRPOTrainer
+peft>=0.13
+datasets>=3.0
+accelerate>=1.0
+bitsandbytes>=0.44        # only for model.load_in_4bit
+PyYAML>=6.0
+
+# Optional: roughly halves wall-clock by moving rollout generation off the
+# training path. Set training.use_vllm: true in the config to use it.
+# vllm>=0.6
