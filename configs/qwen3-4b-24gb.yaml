@@ -71,7 +71,11 @@ training:
   bf16: true
   gradient_checkpointing: true
   logging_steps: 5
-  save_steps: 200
+  # Sized for spot: an interruption costs everything since the last save, and a
+  # checkpoint is far cheaper than the steps it protects. save_total_limit keeps
+  # the data volume from filling up with them.
+  save_steps: 50
+  save_total_limit: 3
   eval_strategy: "no"               # scoring the eval split is evaluate.py's job
   report_to: []
   use_vllm: false                   # true roughly halves wall-clock if installed

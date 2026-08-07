@@ -90,6 +90,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-dir", default=None, help="overrides the config")
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ignore any checkpoint in the output directory and train from step 0",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -100,6 +105,7 @@ def main() -> None:
     from datasets import Dataset
     from peft import LoraConfig
     from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers.trainer_utils import get_last_checkpoint
     from trl import GRPOConfig, GRPOTrainer
 
     model_cfg = cfg["model"]
@@ -167,9 +173,21 @@ def main() -> None:
         peft_config=peft_config,
     )
 
-    trainer.train()
-
+    # Resume without being told to. On a spot instance the process does not get
+    # to decide when it dies, so "start from scratch" must never be the default
+    # for a directory that already holds progress -- that turns a two-minute
+    # interruption into losing the whole run.
     output_dir = Path(grpo_config.output_dir)
+    resume = None
+    if output_dir.is_dir() and not args.fresh:
+        resume = get_last_checkpoint(str(output_dir))
+    if resume:
+        LOG.info("resuming from %s", resume)
+    else:
+        LOG.info("starting from step 0")
+
+    trainer.train(resume_from_checkpoint=resume)
+
     trainer.save_model(str(output_dir / "final"))
     tokenizer.save_pretrained(str(output_dir / "final"))
     (output_dir / "final" / "cryptorl.json").write_text(

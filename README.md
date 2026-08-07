@@ -25,6 +25,7 @@ a live objective without a translation layer.
 | [`cryptorl/dataset.py`](cryptorl/dataset.py) | no | task → training row, and the train/eval split |
 | [`train_grpo.py`](train_grpo.py) | yes | TRL `GRPOTrainer` + LoRA |
 | [`evaluate.py`](evaluate.py) | yes | pass@k on held-out instances, by family and difficulty |
+| [`aws/run-on-ec2.sh`](aws/README.md) | — | launch the run on an EC2 spot GPU, end to end |
 
 The split down that column is deliberate. The reward pipeline is the part that
 decides what the model learns, so it is the part that has to be testable
@@ -40,6 +41,17 @@ live proofwork objective and skip unless that checkout is nearby; point
 `PROOFWORK_ROOT` at it to run them.
 
 ## Quick start
+
+No GPU handy? [`aws/`](aws/README.md) launches the whole thing on an EC2 spot
+instance — roughly $0.63/hr for a 24GB A10G, and built to resume after an
+interruption rather than to avoid one:
+
+```bash
+./aws/run-on-ec2.sh price     # what it would cost, launches nothing
+./aws/run-on-ec2.sh up        # plan, confirm, then train end to end
+```
+
+On your own machine:
 
 ```bash
 pip install -r requirements.txt
