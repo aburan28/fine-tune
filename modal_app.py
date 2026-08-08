@@ -71,7 +71,12 @@ image = (
     .add_local_dir(
         REPO,
         APP_DIR,
-        ignore=[".git", "artifacts", "runs", "data", "__pycache__", ".pytest_cache"],
+        # node_modules: an unrelated npm-managed tool has, at least once, ended
+        # up installed in this directory. add_local_dir reads the filesystem, not
+        # git, so untracking it (see the PR that did that) does not stop it from
+        # being synced into the image -- only excluding it here does.
+        ignore=[".git", "artifacts", "runs", "data", "__pycache__", ".pytest_cache",
+                "node_modules", "package.json", "package-lock.json"],
     )
 )
 
