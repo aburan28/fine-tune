@@ -1,0 +1,7 @@
+# For modal_app.py, run on your own machine -- NOT inside the Modal container.
+#
+# Everything in requirements.txt (torch, trl, transformers, ...) runs remotely,
+# built into the image modal_app.py defines. The only thing that needs to be
+# installed locally is the client that talks to Modal's API and streams logs
+# back to this terminal.
+modal>=1.2
