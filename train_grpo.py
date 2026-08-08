@@ -65,6 +65,35 @@ def supported_kwargs(config_cls, values: dict) -> dict:
     return accepted
 
 
+def latest_complete_checkpoint(output_dir: Path) -> str | None:
+    """The newest checkpoint that actually finished being written.
+
+    ``transformers.trainer_utils.get_last_checkpoint`` picks by step number
+    alone. A run killed mid-save leaves a ``checkpoint-N`` directory with no
+    ``trainer_state.json``, and that is not a rare case here: it is what a spot
+    reclaim or a Modal volume commit racing the writer produces. Handing that
+    directory to the trainer fails the load and takes the run down at the exact
+    moment it was supposed to be recovering, so skip back to the last one that
+    is whole.
+    """
+    def step_of(path: Path) -> int:
+        try:
+            return int(path.name.rsplit("-", 1)[1])
+        except (IndexError, ValueError):
+            return -1
+
+    candidates = sorted(
+        (p for p in output_dir.glob("checkpoint-*") if p.is_dir() and step_of(p) >= 0),
+        key=step_of,
+        reverse=True,
+    )
+    for path in candidates:
+        if (path / "trainer_state.json").is_file():
+            return str(path)
+        LOG.warning("ignoring incomplete checkpoint %s (no trainer_state.json)", path)
+    return None
+
+
 def render_prompts(records: list[dict], tokenizer) -> list[dict]:
     """Apply the chat template ourselves so thinking is provably on.
 
@@ -105,7 +134,6 @@ def main() -> None:
     from datasets import Dataset
     from peft import LoraConfig
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from transformers.trainer_utils import get_last_checkpoint
     from trl import GRPOConfig, GRPOTrainer
 
     model_cfg = cfg["model"]
@@ -180,7 +208,7 @@ def main() -> None:
     output_dir = Path(grpo_config.output_dir)
     resume = None
     if output_dir.is_dir() and not args.fresh:
-        resume = get_last_checkpoint(str(output_dir))
+        resume = latest_complete_checkpoint(output_dir)
     if resume:
         LOG.info("resuming from %s", resume)
     else:

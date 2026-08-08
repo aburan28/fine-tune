@@ -26,6 +26,7 @@ a live objective without a translation layer.
 | [`train_grpo.py`](train_grpo.py) | yes | TRL `GRPOTrainer` + LoRA |
 | [`evaluate.py`](evaluate.py) | yes | pass@k on held-out instances, by family and difficulty |
 | [`aws/run-on-ec2.sh`](aws/README.md) | — | launch the run on an EC2 spot GPU, end to end |
+| [`modal_app.py`](modal_app.py) | — | the same run on Modal, serverless and quota-free |
 
 The split down that column is deliberate. The reward pipeline is the part that
 decides what the model learns, so it is the part that has to be testable
@@ -42,14 +43,28 @@ live proofwork objective and skip unless that checkout is nearby; point
 
 ## Quick start
 
-No GPU handy? [`aws/`](aws/README.md) launches the whole thing on an EC2 spot
-instance — about $0.68/hr for a 32GB g7, and built to resume after an
-interruption rather than to avoid one:
+No GPU handy? Two backends, both built to resume rather than to avoid being
+interrupted.
+
+**Modal** ([`modal_app.py`](modal_app.py)) — the shorter path, because there is
+no GPU quota to request:
+
+```bash
+pip install modal && modal setup
+modal run --detach modal_app.py --config configs/smoke.yaml
+```
+
+**EC2 spot** ([`aws/`](aws/README.md)) — about $0.68/hr for a 32GB g7:
 
 ```bash
 ./aws/run-on-ec2.sh price     # what it would cost, launches nothing
 ./aws/run-on-ec2.sh up        # plan, confirm, then train end to end
 ```
+
+A fresh AWS account has a G-family spot limit of **zero** vCPUs, so the first
+`up` fails with `MaxSpotInstanceCountExceeded` and you wait on a support
+ticket. Modal bills per second and starts now. EC2 is worth the setup if you
+want a box you can SSH into, or you are already inside an AWS budget.
 
 On your own machine:
 

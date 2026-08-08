@@ -1,5 +1,9 @@
 # Running the fine-tune on an EC2 spot GPU
 
+> Blocked on `MaxSpotInstanceCountExceeded`? [`modal_app.py`](../modal_app.py)
+> runs the identical pipeline with no quota to request. This page is for
+> when you want an instance you can SSH into.
+
 ```bash
 ./aws/run-on-ec2.sh price     # what it would cost, launches nothing
 ./aws/run-on-ec2.sh up        # shows a plan, asks, then launches
