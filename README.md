@@ -50,9 +50,14 @@ interrupted.
 no GPU quota to request:
 
 ```bash
-pip install modal && modal setup
+pip install -r requirements-modal.txt
+modal setup                # one-time device auth; skip if `modal profile current` already works
 modal run --detach modal_app.py --config configs/smoke.yaml
 ```
+
+`requirements-modal.txt` is just the `modal` client — everything else
+(`torch`, `trl`, ...) runs remotely, built into the image `modal_app.py`
+defines, and never touches this machine.
 
 **EC2 spot** ([`aws/`](aws/README.md)) — about $0.68/hr for a 32GB g7:
 

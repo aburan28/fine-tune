@@ -1,7 +1,12 @@
 """Run the cryptanalysis GRPO fine-tune on Modal.
 
-    pip install modal && modal setup
+    pip install -r requirements-modal.txt
+    modal setup                                          # one-time device auth
     modal run --detach modal_app.py --config configs/smoke.yaml
+
+Only the `modal` client runs on your machine. Everything below (torch, trl,
+transformers, ...) is declared in the `image` object further down and only
+ever runs inside the remote container.
 
 Modal is the shorter path than [`aws/`](aws/README.md) for one specific reason:
 there is no GPU quota to request. An AWS account that has never run a GPU
