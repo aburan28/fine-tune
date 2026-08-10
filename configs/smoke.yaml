@@ -49,11 +49,19 @@ training:
   beta: 0.02
   max_steps: 20
   max_prompt_length: 768
-  max_completion_length: 512
+  # 512 was too tight: Qwen3 in thinking mode spent the whole budget inside
+  # <think> and got cut off before closing it, so every rollout parsed as
+  # invalid and every group had identical reward -- GRPO had no advantage
+  # signal at all (frac_reward_zero_std was 1.0 for all 20 steps).
+  max_completion_length: 1536
   temperature: 1.0
   top_p: 0.95
   bf16: true
-  gradient_checkpointing: false
+  # On, despite this being the cheap config: at 1536-token completions the
+  # A10G OOM'd at 20.5GiB of 22GiB with it off. Recomputing activations in
+  # the backward pass costs ~30% wall clock and is the difference between
+  # this running and not running at all.
+  gradient_checkpointing: true
   logging_steps: 1
   save_steps: 20
   eval_strategy: "no"

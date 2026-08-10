@@ -114,13 +114,23 @@ def _commit_periodically(stop: threading.Event, seconds: int = 300) -> None:
     # Modal reclaims containers. A retry re-enters this function, which finds
     # the volume's checkpoints and continues; without the resume logic it would
     # cheerfully start from step 0 three times.
-    retries=modal.Retries(max_retries=3, initial_delay=10.0),
+    #
+    # Only one retry, though: retries exist for preemption, and Modal cannot
+    # tell that from a deterministic failure. An OOM in the config burned four
+    # identical attempts and four lots of GPU time before surfacing, which is
+    # the wrong way round -- a real preemption is rare, a bad config is not.
+    retries=modal.Retries(max_retries=1, initial_delay=10.0),
 )
 def run(config: str, eval_size: int, samples: int, max_difficulty: int) -> dict:
     env = dict(
         os.environ,
         HF_HOME=f"{VOL}/hf",
         TOKENIZERS_PARALLELISM="false",
+        # The allocator's own suggestion after an OOM here. Long completions make
+        # the activation blocks vary in size between steps, which fragments the
+        # cache; expandable segments let it grow a block instead of failing to
+        # find a contiguous one.
+        PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True",
     )
     runs = Path(f"{VOL}/runs/current")
     state = Path(f"{VOL}/state")
@@ -144,7 +154,7 @@ def run(config: str, eval_size: int, samples: int, max_difficulty: int) -> dict:
         if not (state / "baseline.done").exists():
             sh("python", "evaluate.py", "--model", model, "--size", str(eval_size),
                "--samples", str(samples), "--max-difficulty", str(max_difficulty),
-               "--out", f"{VOL}/baseline.json")
+               "--dump-completions", "2", "--out", f"{VOL}/baseline.json")
             (state / "baseline.done").touch()
             VOLUME.commit()
 
@@ -152,7 +162,8 @@ def run(config: str, eval_size: int, samples: int, max_difficulty: int) -> dict:
 
         sh("python", "evaluate.py", "--model", model, "--adapter", str(runs / "final"),
            "--size", str(eval_size), "--samples", str(samples),
-           "--max-difficulty", str(max_difficulty), "--out", f"{VOL}/tuned.json")
+           "--max-difficulty", str(max_difficulty), "--dump-completions", "2",
+           "--out", f"{VOL}/tuned.json")
     finally:
         stop.set()
         committer.join(timeout=30)

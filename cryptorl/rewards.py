@@ -63,8 +63,18 @@ def parse_completion(completion: object) -> Parsed:
         if not think:
             violations.append("empty_think")
     else:
+        # No answer region at all, rather than "the whole thing".
+        #
+        # The contract is that the answer follows </think>; with no closing tag
+        # the model never left its scratchpad. Treating the reasoning as the
+        # answer region meant the illustrative JSON a model writes while
+        # thinking ("suppose the answer were {...}") counted as candidate
+        # answers, so a run that had simply failed to terminate was reported as
+        # `multiple_answers` -- an anti-shotgunning rule firing on something
+        # that was not shotgunning. The reward is the same either way; the
+        # difference is whether the reason tells you what actually went wrong.
         violations.append("unterminated_think")
-        think, answer_region = "", text
+        think, answer_region = text, ""
 
     fences = _FENCE_RE.findall(answer_region)
     if len(fences) > 1:

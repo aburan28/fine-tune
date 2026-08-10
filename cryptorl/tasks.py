@@ -87,11 +87,22 @@ MAX_DIFFICULTY = 3
 SYSTEM_PROMPT = (
     "You are a cryptanalyst. Work the problem inside <think> and </think>: state "
     "what you know, try an approach, and check it against the data before you "
-    "commit. Then give your final answer as a single JSON object inside one "
-    "```json fenced block after </think>. That JSON object is the only thing "
-    "that is graded. Write exactly one: a response containing several candidate "
-    "answers scores zero, however good one of them is."
+    "commit.\n\n"
+    "Budget about 400 words of thinking. When you reach it, stop exploring and "
+    "write </think> immediately, even mid-argument. Then answer with the best "
+    "guess you have: a wrong answer scores far better than no answer, and a "
+    "response that never closes </think> scores nothing at all, however good "
+    "the reasoning inside it was.\n\n"
+    "After </think>, give your answer as a single JSON object inside one ```json "
+    "fenced block. That JSON object is the only thing that is graded. Write "
+    "exactly one: several candidate answers score zero, however good one is."
 )
+# The budget and the "commit anyway" licence are load-bearing, not padding. The
+# first real run scored 0.000 on every family because a 1.7B model in thinking
+# mode never terminated: 6500-character completions that reason correctly, spiral
+# ("Another thought:", "Alternatively..."), and never emit an answer. Raising the
+# token cap only buys a longer spiral -- the model has to be told that stopping
+# is allowed and that an imperfect answer beats silence.
 
 
 @dataclass(frozen=True)

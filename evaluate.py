@@ -33,9 +33,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--families", nargs="+", default=list(FAMILIES))
     parser.add_argument("--max-difficulty", type=int, default=MAX_DIFFICULTY)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--force-close-tokens",
+        type=int,
+        default=256,
+        help="when a rollout never writes </think>, close it and generate this "
+             "many more tokens so there is something to grade; 0 disables",
+    )
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--out", default=None, help="write the full report as JSON")
+    parser.add_argument(
+        "--dump-completions",
+        type=int,
+        default=0,
+        help="print this many raw completions verbatim; the only way to tell a "
+             "reasoning failure from a formatting one",
+    )
     return parser.parse_args()
 
 
@@ -57,14 +71,17 @@ def load_model(model_id: str, adapter: str | None):
     return model, tokenizer
 
 
-def generate_batch(model, tokenizer, prompts: list[str], args) -> list[str]:
+FORCED_CLOSE = "\n</think>\n\n"
+
+
+def _generate(model, tokenizer, prompts: list[str], max_new_tokens: int, args) -> list[str]:
     import torch
 
     encoded = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True).to(model.device)
     with torch.no_grad():
         output = model.generate(
             **encoded,
-            max_new_tokens=args.max_new_tokens,
+            max_new_tokens=max_new_tokens,
             do_sample=args.temperature > 0,
             temperature=args.temperature,
             top_p=0.95,
@@ -72,7 +89,58 @@ def generate_batch(model, tokenizer, prompts: list[str], args) -> list[str]:
         )
     # Slice off the prompt so the completion the grader sees is what the policy
     # actually produced, not the instructions it was given.
-    return tokenizer.batch_decode(output[:, encoded["input_ids"].shape[1] :], skip_special_tokens=False)
+    decoded = tokenizer.batch_decode(
+        output[:, encoded["input_ids"].shape[1] :], skip_special_tokens=False
+    )
+    # Batch generation pads the short sequences; those pad and end tokens are
+    # not part of what the policy said, and they must not be fed back in when a
+    # completion gets continued below.
+    trailing = [t for t in (tokenizer.pad_token, tokenizer.eos_token) if t]
+    cleaned = []
+    for text in decoded:
+        changed = True
+        while changed:
+            changed = False
+            for token in trailing:
+                if text.endswith(token):
+                    text = text[: -len(token)]
+                    changed = True
+        cleaned.append(text)
+    return cleaned
+
+
+def generate_batch(model, tokenizer, prompts: list[str], args) -> list[str]:
+    """Generate, then make a non-terminating rollout gradeable anyway.
+
+    A model that reasons well but never writes ``</think>`` scores exactly the
+    same as one that emitted nothing -- which is the failure the first runs hit
+    on every single instance, so the evaluation could not distinguish "cannot do
+    cryptanalysis" from "does not stop talking". Closing the block and giving it
+    a short continuation asks the question the evaluation is actually for: given
+    that it has to answer now, is the answer right?
+
+    This measures the base model more fairly; it does not fix training, where
+    TRL owns generation and an unterminated rollout stays unterminated. The
+    prompt's word budget is the lever there.
+    """
+    completions = _generate(model, tokenizer, prompts, args.max_new_tokens, args)
+    if args.force_close_tokens <= 0:
+        return completions
+
+    stuck = [i for i, c in enumerate(completions) if "</think>" not in c]
+    if not stuck:
+        return completions
+
+    continuations = _generate(
+        model,
+        tokenizer,
+        [prompts[i] + completions[i] + FORCED_CLOSE for i in stuck],
+        args.force_close_tokens,
+        args,
+    )
+    for j, i in enumerate(stuck):
+        completions[i] = completions[i] + FORCED_CLOSE + continuations[j]
+    return completions
 
 
 def main() -> None:
@@ -100,6 +168,7 @@ def main() -> None:
     total = defaultdict(int)
     invalid = defaultdict(int)
     detail = []
+    dumped: list[dict] = []
 
     for start in range(0, len(records), args.batch_size):
         chunk = records[start : start + args.batch_size]
@@ -109,7 +178,7 @@ def main() -> None:
         for _ in range(args.samples):
             completions = generate_batch(model, tokenizer, chunk_prompts, args)
             for i, (record, completion) in enumerate(zip(chunk, completions)):
-                _, verdict = grade(
+                parsed, verdict = grade(
                     completion,
                     record["family"],
                     json.loads(record["solution_json"]),
@@ -117,6 +186,23 @@ def main() -> None:
                 )
                 per_record[i].append(verdict.accepted)
                 per_record_invalid[i] += int(verdict.invalid)
+
+                # A table of zeroes says the model failed but not how, and the
+                # two explanations -- it reasoned badly, or it never emitted a
+                # parseable answer at all -- call for opposite fixes. Printing
+                # the first few completions verbatim is the difference between
+                # diagnosing that and guessing at it.
+                if len(dumped) < args.dump_completions:
+                    dumped.append(
+                        {
+                            "family": record["family"],
+                            "difficulty": record["difficulty"],
+                            "verdict": verdict.reason,
+                            "violations": list(parsed.violations),
+                            "chars": len(completion),
+                            "completion": completion,
+                        }
+                    )
 
         for record, results, bad in zip(chunk, per_record, per_record_invalid):
             key = (record["family"], record["difficulty"])
@@ -159,6 +245,12 @@ def main() -> None:
         )
     overall = sum(solved_first.values()) / max(1, sum(total.values()))
     print(f"\noverall pass@1: {overall:.3f} over {sum(total.values())} instances")
+
+    for i, d in enumerate(dumped):
+        print(f"\n{'=' * 70}\nRAW COMPLETION {i + 1}  {d['family']} d{d['difficulty']}  "
+              f"({d['chars']} chars)\n  verdict: {d['verdict']}\n"
+              f"  violations: {d['violations'] or 'none'}\n{'-' * 70}")
+        print(d["completion"])
 
     if args.out:
         with open(args.out, "w") as handle:
