@@ -278,6 +278,42 @@ def test_answer_only_inside_the_thinking_block_is_not_graded():
     assert parsed.artifact is None
 
 
+def test_reasoning_that_never_terminates_reports_why():
+    """The real failure mode from the first GPU runs, kept as a regression.
+
+    A model that spirals inside <think> and never closes it writes plenty of
+    illustrative JSON on the way ("suppose the answer were {...}"). Scanning
+    that as the answer region made the anti-shotgunning rule fire, so every
+    such rollout was reported as `multiple_answers` -- which reads as "the
+    model hedged" when what happened is "the model never stopped talking".
+    Same reward either way; opposite fixes.
+    """
+    spiral = (
+        "Let me try {\"k\": 1} as a guess.\n"
+        "Alternatively, maybe {\"k\": 2} works better.\n"
+        "Another thought: what about {\"k\": 3}?\n"
+    )
+    parsed = parse_completion(spiral)
+    assert "unterminated_think" in parsed.violations
+    assert "multiple_answers" not in parsed.violations
+    assert "no_answer" in parsed.violations
+    assert parsed.artifact is None
+    assert parsed.answer_region == ""
+    # and it still reads as invalid, so the reward is unchanged
+    task = generate("dlp-modp", 0, 0)
+    _, verdict = grade(spiral, task.family, task.solution, task.params)
+    assert not verdict.accepted and verdict.invalid
+
+
+def test_shotgunning_after_a_closed_think_block_still_scores_zero():
+    """The anti-shotgunning rule must survive the fix above."""
+    parsed = parse_completion(
+        'reasoning\n</think>\n```json\n{"k": 1}\n```\n```json\n{"k": 2}\n```'
+    )
+    assert "multiple_answers" in parsed.violations
+    assert parsed.artifact is None
+
+
 def test_unparseable_json_is_not_an_exception():
     parsed = parse_completion('work\n</think>\n```json\n{"k": 07,}\n```')
     assert parsed.artifact is None
